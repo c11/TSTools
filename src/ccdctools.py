@@ -170,12 +170,8 @@ class CCDCTools:
             return
 
         # Check if position needs to be reprojected to layer CRS
-        if QGis.QGIS_VERSION_INT >= 10900:
-            layerCrs = layer.crs()
-            mapCrs = self.canvas.mapRenderer().destinationCrs()
-        else:
-            layerCrs = layer.srs()
-            mapCrs = self.canvas.mapRenderer().destinationSrs()
+        layerCrs = layer.crs()
+        mapCrs = self.canvas.mapRenderer().destinationCrs()
 
         if not mapCrs == layerCrs and self.canvas.hasCrsTransformEnabled():
             crsTransform = QgsCoordinateTransform(mapCrs, layerCrs)
