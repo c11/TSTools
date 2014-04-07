@@ -55,6 +55,21 @@ disp(strrep(['   B_detect:  [' sprintf(' %i,', B_detect) ']'], ',]', ' ]'))
 fprintf('\n');
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%  defining variables
+% Vary number of coefficients
+if num_c == 2
+    autoTSFit = @autoTSFit_h0;
+    autoTSPred = @autoTSPred_h0;
+elseif num_c == 4
+    autoTSFit = @autoTSFit_h1;
+    autoTSPred = @autoTSPred_h1;
+elseif num_c == 6
+    autoTSFit = @autoTSFit_h2;
+    autoTSPred = @autoTSPred_h2;
+elseif num_c == 8
+    autoTSFit = @autoTSFit_h3;
+    autoTSPred = @autoTSPred_h3;
+end
+
 %% Constants
 % NUM of Functional Curves (num_fc)
 num_fc=0;
@@ -363,7 +378,7 @@ rec_cg=struct('t_start',[], ...
 
                     % CEHOLDEN change: record which bands exceeded critical value
                     [~, band_crit] = find(v_dif > 1);
-                    rec_cg(num_fc).band = unique(band_crit);
+                    rec_cg(num_fc).band = unique(B_detect(band_crit));
 
                     % CEHOLDEN change: store the v_dif matrix
                     rec_cg(num_fc).v_dif = v_dif;
