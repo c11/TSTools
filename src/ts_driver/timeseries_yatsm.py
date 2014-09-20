@@ -2,13 +2,13 @@
 # vim: set expandtab:ts=4
 """
 /***************************************************************************
- CCDCTimeSeries
+ Yet Another TimeSeries Model
                                  A QGIS plugin
- Plotting & visualization tools for CCDC Landsat time series analysis
+ Plugin for visualization and analysis of remote sensing time series
                              -------------------
         begin                : 2013-03-15
         copyright            : (C) 2013 by Chris Holden
-        email                : ceholden@bu.edu
+        email                : ceholden@gmail.com
  ***************************************************************************/
 
 /***************************************************************************
@@ -31,12 +31,11 @@ except:
 
 import timeseries_ccdc
 
+logger = logging.getLogger()
+
 
 class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
-    """Class holding data and methods for time series used by CCDC
-    (Change Detection and Classification). Useful for QGIS plugin 'TSTools'.
-
-    More doc TODO
+    """ Timeseries "driver" for QGIS plugin that connects requests with model
     """
 
     # __str__ name for TSTools data model plugin loader
@@ -51,21 +50,32 @@ class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
 
     crossvalidate_lambda = False
     consecutive = 5
-    min_obs = 12
-    threshold = 2.57
-    enable_min_rmse = False
-    min_rmse = 0.0
-    freq = np.array([1, 2, 3])
+    min_obs = 16
+    threshold = 3.0
+    enable_min_rmse = True
+    min_rmse = 100.0
+    freq = np.array([1])
     reverse = False
-    test_indices = np.array([3, 4, 5, 6])
+    screen_lowess = False
+    test_indices = np.array([2, 3, 4, 5])
     robust_results = False
+    debug = False
 
     __custom_controls_title__ = 'YATSM Options'
     __custom_controls__ = ['crossvalidate_lambda',
                            'consecutive', 'min_obs', 'threshold',
                            'enable_min_rmse', 'min_rmse',
                            'freq', 'reverse',
-                           'test_indices', 'robust_results']
+                           'screen_lowess',
+                           'test_indices', 'robust_results',
+                           'debug']
+
+    sensor = np.empty(0)
+    pathrow = np.empty(0)
+    multitemp_screened = np.empty(0)
+
+    __metadata__ = ['sensor', 'pathrow', 'multitemp_screened']
+    __metadata__str__ = ['Sensor', 'Path/Row', 'Multitemporal Screen']
 
     def __init__(self, location, config=None):
 
@@ -90,7 +100,7 @@ class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
                 if k == 'freq':
                     if any([_v not in self.freq for _v in v]) or \
                             any([_f not in v for _f in self.freq]):
-                        self.X = make_X(self.ord_dates, self.freq).T
+                        self.X = make_X(self.ord_dates, v).T
                 setattr(self, k, v)
             else:
                 # Make an exception for minimum RMSE since we can pass None
@@ -102,26 +112,30 @@ class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
 
     def retrieve_result(self):
         """ Returns the record changes for the current pixel
-
-        Result is stored as a list of dictionaries
-
-        Note:   MATLAB indexes on 1 so y is really (y - 1) in calculations and
-                x is (x - 1)
-
-        CCDC Usage:cd
-            rec_cg=TrendSeasonalFit_v10_QGIS(
-                N_row,N_col, mini, T_cg, n_times, conse, B_detect)
-
         """
         # Note: X recalculated during variable setting, if needed, unless None
-        self.X = make_X(self.ord_dates, self.freq).T
+        if self.X is None:
+            self.X = make_X(self.ord_dates, self.freq).T
         # Get Y
         self.Y = self.get_data(mask=False)
-        clear = self.Y[self.mask_band - 1, :] <= 1
+
+        # Mask out mask values
+        clear = np.logical_and.reduce([self.Y[self.mask_band - 1, :] != mv
+                                      for mv in self.mask_val])
 
         # Turn on/off minimum RMSE
         if not self.enable_min_rmse:
             self.min_rmse = None
+
+        # Set logger level for verbose if wanted
+        level = logger.level
+        if self.debug:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
+
+        # LOWESS screening, or RLM?
+        screen = 'LOWESS' if self.screen_lowess else 'RLM'
 
         if self.reverse:
             self.yatsm_model = YATSM(np.flipud(self.X[clear, :]),
@@ -130,8 +144,10 @@ class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
                                      threshold=self.threshold,
                                      min_obs=self.min_obs,
                                      min_rmse=self.min_rmse,
+                                     test_indices=self.test_indices,
+                                     screening=screen,
                                      lassocv=self.crossvalidate_lambda,
-                                     loglevel=logging.INFO)
+                                     logger=logger)
         else:
             self.yatsm_model = YATSM(self.X[clear, :],
                                      self.Y[:-1, clear],
@@ -139,8 +155,10 @@ class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
                                      threshold=self.threshold,
                                      min_obs=self.min_obs,
                                      min_rmse=self.min_rmse,
+                                     test_indices=self.test_indices,
+                                     screening=screen,
                                      lassocv=self.crossvalidate_lambda,
-                                     loglevel=logging.INFO)
+                                     logger=logger)
 
         # Run
         self.yatsm_model.run()
@@ -150,6 +168,19 @@ class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
             self.result = self.yatsm_model.robust_record
         else:
             self.result = self.yatsm_model.record
+
+        # Reset logger level
+        logger.setLevel(level)
+
+        # Update multitemporal screening metadata
+        self.multitemp_screened = np.in1d(self.X[:, 1],
+                                          self.yatsm_model.X[:, 1],
+                                          invert=True).astype(np.uint8)
+        print('****MASKED****')
+        print(np.in1d(self.X[:, 1],
+                      self.yatsm_model.X[:, 1]).astype(np.uint8).sum())
+        print(np.in1d(self.X[:, 1],
+                      self.yatsm_model._X[:, 1]).astype(np.uint8).sum())
 
     def get_prediction(self, band, usermx=None):
         """ Return the time series model fit predictions for any single pixel
@@ -195,39 +226,12 @@ class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
                                     i_step)
                 coef = rec['coef'][:, band]
 
-                ### Calculate model predictions
-                w = 2 * np.pi / 365.25
+                _mX = make_X(_mx, self.freq)
 
-                if coef.shape[0] == 2:
-                    _my = (coef[0] +
-                           coef[1] * _mx)
-                elif coef.shape[0] == 4:
-                    # 4 coefficient model
-                    _my = (coef[0] +
-                           coef[1] * _mx +
-                           coef[2] * np.cos(w * _mx) +
-                           coef[3] * np.sin(w * _mx))
-                elif coef.shape[0] == 6:
-                    # 6 coefficient model
-                    _my = (coef[0] +
-                           coef[1] * _mx +
-                           coef[2] * np.cos(w * _mx) +
-                           coef[3] * np.sin(w * _mx) +
-                           coef[4] * np.cos(2 * w * _mx) +
-                           coef[5] * np.sin(2 * w * _mx))
-                elif coef.shape[0] == 8:
-                    # 8 coefficient model
-                    _my = (coef[0] +
-                           coef[1] * _mx +
-                           coef[2] * np.cos(w * _mx) +
-                           coef[3] * np.sin(w * _mx) +
-                           coef[4] * np.cos(2 * w * _mx) +
-                           coef[5] * np.sin(2 * w * _mx) +
-                           coef[6] * np.cos(3 * w * _mx) +
-                           coef[7] * np.sin(3 * w * _mx))
-                else:
-                    break
-                ### Transform MATLAB ordinal date into Python datetime
+                ### Calculate model predictions
+                _my = np.dot(coef, _mX)
+
+                ### Transform ordinal back into Python datetime
                 _mx = [dt.fromordinal(int(m)) for m in _mx]
                 ### Append
                 mx.append(np.array(_mx))
@@ -250,6 +254,19 @@ class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
 
         return (bx, by)
 
+    def _get_metadata(self):
+        """ Parse timeseries attributes for metadata """
+        # Sensor ID
+        self.sensor = np.array([n[0:3] for n in self.image_names])
+        # Path/Row
+        self.pathrow = np.array(['p{p}r{r}'.format(p=n[3:6], r=n[6:9])
+                                for n in self.image_names])
+        # Multitemporal noise screening - init to 0 (not screened)
+        #   Will update this during model fitting
+        self.multitemp_screened = np.ones(self.length)
+        # Make an entry 0 so we get this in the unique values
+        self.multitemp_screened[0] = 0
+
 ### OVERRIDEN "ADDITIONAL" OPTIONAL METHODS SUPPORTED BY CCDCTimeSeries
 ### INTERNAL SETUP METHODS
     def _check_yatsm(self):
@@ -257,7 +274,7 @@ class YATSM_LIVE(timeseries_ccdc.CCDCTimeSeries):
         try:
             global YATSM
             global make_X
-            from yatsm.yatsm import YATSM, make_X
+            from ..yatsm.yatsm import YATSM, make_X
         except:
             raise Exception('Could not import YATSM')
         else:

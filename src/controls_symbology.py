@@ -2,13 +2,13 @@
 # vim: set expandtab:ts=4
 """
 /***************************************************************************
- CCDCToolsDialog
+ TSTools metadata plotter symbology handler
                                  A QGIS plugin
- Plotting & visualization tools for CCDC Landsat time series analysis
+ Plugin for visualization and analysis of remote sensing time series
                              -------------------
         begin                : 2013-03-15
         copyright            : (C) 2013 by Chris Holden
-        email                : ceholden@bu.edu
+        email                : ceholden@gmail.com
  ***************************************************************************/
 
 /***************************************************************************
@@ -31,7 +31,8 @@ import matplotlib as mpl
 from ui_symbology import Ui_Symbology as Ui_Widget
 
 from controls_attach_md import AttachMetadata
-import settings as setting
+from .ts_driver.ts_manager import tsm
+from . import settings as setting
 
 class SymbologyControl(QtGui.QDialog, Ui_Widget):
     """ Plot symbology controls """
@@ -51,9 +52,9 @@ class SymbologyControl(QtGui.QDialog, Ui_Widget):
 
         self.markers = {k: text for k, text in zip(keys, marker_texts)}
 
-    def setup_gui(self, ts):
+    def setup_gui(self):
         """ Setup GUI with metadata from timeseries """
-        self.setup_tables(ts)
+        self.setup_tables()
 
         # Add handler for stacked widget
         self.list_metadata.currentRowChanged.connect(self.metadata_changed)
@@ -63,15 +64,14 @@ class SymbologyControl(QtGui.QDialog, Ui_Widget):
             self.symbology_applied)
 
         # Attach metadata
-        self.attach_md = AttachMetadata(self.iface, ts)
+        self.attach_md = AttachMetadata(self.iface)
         self.attach_md.metadata_attached.connect(self.refresh_metadata)
         self.but_load_metadata.clicked.connect(self.load_metadata)
 
-    def setup_tables(self, ts):
+    def setup_tables(self):
         """ Setup tables """
-        self.ts = ts
         # Check for metadata
-        md = getattr(ts, '__metadata__', None)
+        md = getattr(tsm.ts, '__metadata__', None)
         if not isinstance(md, list) or len(md) == 0:
             self.has_metadata = False
             self.setup_gui_nomd()
@@ -79,12 +79,12 @@ class SymbologyControl(QtGui.QDialog, Ui_Widget):
 
         self.metadata = list(md)
 
-        self.md = [getattr(ts, _md) for _md in md]
+        self.md = [getattr(tsm.ts, _md) for _md in md]
 
         self.has_metadata = True
 
         # Setup metadata listing
-        self.md_str = getattr(ts, '__metadata__str__', None)
+        self.md_str = getattr(tsm.ts, '__metadata__str__', None)
         if not isinstance(self.md_str, list) or \
                 len(self.md_str) != len(self.md):
             # If there is no description string, just use variable names
@@ -179,7 +179,10 @@ class SymbologyControl(QtGui.QDialog, Ui_Widget):
 
     @QtCore.pyqtSlot()
     def color_button_pressed(self, i, i_md, unique):
-        """ """
+        """ Slot for color chooser
+
+        Pops up color chooser dialog and stores values
+        """
         # Current color
         c = self.unique_symbologies[i_md][unique]['color']
         current_c = QtGui.QColor(c[0], c[1], c[2])
@@ -204,14 +207,12 @@ class SymbologyControl(QtGui.QDialog, Ui_Widget):
 
     @QtCore.pyqtSlot(int)
     def marker_changed(self, i, i_md, unique, index):
-        """ """
+        """ Slot for changing marker style """
         # Find combobox
         cbox = self.tables[i_md].cellWidget(i, 1)
         # Update value
         self.unique_symbologies[i_md][unique]['marker'] = \
             self.markers.keys()[index]
-
-        print cbox.itemText(index)
 
     @QtCore.pyqtSlot(int)
     def metadata_changed(self, row):
@@ -232,7 +233,6 @@ class SymbologyControl(QtGui.QDialog, Ui_Widget):
         Emits "plot_symbology_applied" to Controls, which pushes to Controller,
         and then to the plots
         """
-        print 'Applied / OK'
         # Send symbology to settings
         row = self.list_metadata.currentRow()
 
@@ -243,30 +243,11 @@ class SymbologyControl(QtGui.QDialog, Ui_Widget):
             setting.plot_symbol['markers'] = None
             setting.plot_symbol['colors'] = None
         else:
-            # Else, get the appropriate values
             setting.plot_symbol['enabled'] = True
-
-            # Grab unique values
-            keys = self.unique_symbologies[row].keys()
-
-            # Grab unique value's markers and colors
-            indices = []
-            markers = []
-            colors = []
-            for k in keys:
-                indices.append(np.where(self.md[row - 1] == k)[0])
-                markers.append(self.unique_symbologies[row][k]['marker'])
-                colors.append(self.unique_symbologies[row][k]['color'])
-
-            setting.plot_symbol['indices'] = list(indices)
-            setting.plot_symbol['markers'] = list(markers)
-            setting.plot_symbol['colors'] = list(colors)
+            self.parse_metadata_symbology()
 
         # Emit changes
         self.plot_symbology_applied.emit()
-
-        print setting.plot_symbol['colors']
-        print setting.plot_symbol['markers']
 
     @QtCore.pyqtSlot()
     def load_metadata(self):
@@ -277,17 +258,16 @@ class SymbologyControl(QtGui.QDialog, Ui_Widget):
     def refresh_metadata(self):
         """ Reset old table and load up new metadata """
         self.update_tables()
-        # self.setup_tables(self.ts)
 
     def update_tables(self):
         """ Setup tables """
         # Check for new metadata
         new_i = []
-        for i, (_md, _md_str) in enumerate(zip(self.ts.__metadata__,
-                                               self.ts.__metadata__str__)):
+        for i, (_md, _md_str) in enumerate(zip(tsm.ts.__metadata__,
+                                               tsm.ts.__metadata__str__)):
             if _md not in self.metadata:
                 self.metadata.append(_md)
-                self.md.append(getattr(self.ts, _md))
+                self.md.append(getattr(tsm.ts, _md))
                 self.md_str.append(_md_str)
                 new_i.append(i)
 
@@ -328,6 +308,32 @@ class SymbologyControl(QtGui.QDialog, Ui_Widget):
             self.init_metadata(i_md)
 
         self.stack_widget.setCurrentIndex(0)
+
+    def parse_metadata_symbology(self):
+        """ Parses TS's metadata to update the symbology attributes """
+        print 'Updating symbology?: %s' % str(setting.plot_symbol['enabled'])
+
+        if setting.plot_symbol['enabled']:
+            # Determine current metadata
+            row = self.list_metadata.currentRow()
+
+            # Update metadata
+            self.md[row - 1] = getattr(tsm.ts, tsm.ts.__metadata__[row - 1])
+
+            # Grab unique values
+            keys = self.unique_symbologies[row].keys()
+            # Grab unique value's markers and colors
+            indices = []
+            markers = []
+            colors = []
+            for k in keys:
+                indices.append(np.where(self.md[row - 1] == k)[0])
+                markers.append(self.unique_symbologies[row][k]['marker'])
+                colors.append(self.unique_symbologies[row][k]['color'])
+                print (self.md[row - 1] == k).sum()
+            setting.plot_symbol['indices'] = list(indices)
+            setting.plot_symbol['markers'] = list(markers)
+            setting.plot_symbol['colors'] = list(colors)
 
 #    def reset_tables(self):
 #        """ Removes all metadata items from table """
